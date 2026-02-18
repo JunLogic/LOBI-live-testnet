@@ -1,0 +1,91 @@
+{
+  "config": {
+    "label_col": "148",
+    "cost": 0.02,
+    "strategy": "rule",
+    "threshold_grid": [
+      0.0,
+      0.04,
+      0.06,
+      0.08,
+      0.1,
+      0.12
+    ],
+    "top_k": 10,
+    "annualization_factor": null,
+    "standardize": false
+  },
+  "rule": {
+    "selected_threshold": 0.06,
+    "selected_features": [
+      "69",
+      "65",
+      "79",
+      "75",
+      "66",
+      "64",
+      "67",
+      "76",
+      "74",
+      "70"
+    ],
+    "train_metrics": {
+      "total_pnl": 41893.14,
+      "mean_pnl": 0.11559917218543046,
+      "std_pnl": 0.6154401359763735,
+      "sharpe_per_step": 0.18783170844396843,
+      "max_drawdown": -116.09999999999809,
+      "win_rate_exposed": 0.4827913774205334,
+      "avg_trade_return": 1.051349913418827,
+      "num_trades": 39847
+    },
+    "test_metrics": {
+      "total_pnl": 1847.98,
+      "mean_pnl": 0.05786329335880014,
+      "std_pnl": 0.5284353602477759,
+      "sharpe_per_step": 0.10949928356737682,
+      "max_drawdown": -56.279999999998836,
+      "win_rate_exposed": 0.4333887437663263,
+      "avg_trade_return": 0.5284472404918502,
+      "num_trades": 3497
+    },
+    "threshold_sensitivity": [
+      {
+        "threshold": 0.0,
+        "sharpe_per_step": 0.161605532401166,
+        "total_pnl": 50235.22,
+        "num_trades": 23745
+      },
+      {
+        "threshold": 0.04,
+        "sharpe_per_step": 0.1831820749958465,
+        "total_pnl": 44562.78,
+        "num_trades": 40960
+      },
+      {
+        "threshold": 0.06,
+        "sharpe_per_step": 0.18783170844396843,
+        "total_pnl": 41893.14,
+        "num_trades": 39847
+      },
+      {
+        "threshold": 0.08,
+        "sharpe_per_step": 0.18377552774385775,
+        "total_pnl": 38522.5,
+        "num_trades": 40479
+      },
+      {
+        "threshold": 0.1,
+        "sharpe_per_step": 0.17812507890920568,
+        "total_pnl": 34640.5,
+        "num_trades": 38418
+      },
+      {
+        "threshold": 0.12,
+        "sharpe_per_step": 0.17254943797644398,
+        "total_pnl": 31374.780000000002,
+        "num_trades": 35642
+      }
+    ]
+  }
+}
