@@ -30,9 +30,15 @@ class RuntimeSettings:
     poll_interval_seconds: float
     cooldown_seconds: float
     max_notional_per_trade_usdt: float
+    min_notional_per_trade_usdt: float
     max_abs_position_btc: float
+    enable_position_sizing: bool
+    position_sizing_mode: str
     use_depth: bool
     depth_levels: int
+    debug_depth_sums: bool
+    stale_snapshot_max_repeats: int
+    stale_snapshot_skip: bool
     max_consecutive_errors: int
     resync_every_n_polls: int
     max_polls: int
@@ -76,6 +82,12 @@ def load_runtime_settings() -> RuntimeSettings:
     thresh_grid_step = max(
         0.0001, _parse_float(os.getenv("THRESH_GRID_STEP", "0.01"), 0.01)
     )
+    stale_snapshot_max_repeats = max(
+        0, _parse_int(os.getenv("STALE_SNAPSHOT_MAX_REPEATS", "2"), 2)
+    )
+    position_sizing_mode = os.getenv("POSITION_SIZING_MODE", "linear_excess").strip().lower()
+    if position_sizing_mode not in {"linear_excess", "linear_abs"}:
+        position_sizing_mode = "linear_excess"
 
     return RuntimeSettings(
         dry_run=_parse_bool(os.getenv("DRY_RUN", "true")),
@@ -88,11 +100,21 @@ def load_runtime_settings() -> RuntimeSettings:
         max_notional_per_trade_usdt=max(
             0.0, _parse_float(os.getenv("MAX_NOTIONAL_PER_TRADE_USDT", "10"), 10.0)
         ),
+        min_notional_per_trade_usdt=max(
+            0.0, _parse_float(os.getenv("MIN_NOTIONAL_PER_TRADE_USDT", "0"), 0.0)
+        ),
         max_abs_position_btc=max(
             0.0, _parse_float(os.getenv("MAX_ABS_POSITION_BTC", "0.001"), 0.001)
         ),
+        enable_position_sizing=_parse_bool(
+            os.getenv("ENABLE_POSITION_SIZING", "false")
+        ),
+        position_sizing_mode=position_sizing_mode,
         use_depth=_parse_bool(os.getenv("USE_DEPTH", "false")),
         depth_levels=max(1, _parse_int(os.getenv("DEPTH_LEVELS", "10"), 10)),
+        debug_depth_sums=_parse_bool(os.getenv("DEBUG_DEPTH_SUMS", "false")),
+        stale_snapshot_max_repeats=stale_snapshot_max_repeats,
+        stale_snapshot_skip=_parse_bool(os.getenv("STALE_SNAPSHOT_SKIP", "true")),
         max_consecutive_errors=max(
             1, _parse_int(os.getenv("MAX_CONSECUTIVE_ERRORS", "5"), 5)
         ),

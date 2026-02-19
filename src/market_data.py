@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.binance_client import BinanceClient
 from src.settings import RuntimeSettings
@@ -28,11 +28,19 @@ class MarketSnapshot:
     bid_qty: float
     ask_qty: float
     imbalance: float
+    depth_update_id: Optional[int] = None
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -95,6 +103,13 @@ def get_depth(client: BinanceClient, symbol: str, limit: int) -> Dict[str, Any]:
 def compute_depth_imbalance(
     bids: List[List[str]], asks: List[List[str]], levels: int
 ) -> float:
+    bid_sum, ask_sum = compute_depth_qty_sums(bids=bids, asks=asks, levels=levels)
+    return _imbalance_ratio(bid_sum, ask_sum)
+
+
+def compute_depth_qty_sums(
+    bids: List[List[str]], asks: List[List[str]], levels: int
+) -> Tuple[float, float]:
     top_bids: List[Tuple[float, float]] = [
         (_to_float(px), _to_float(qty)) for px, qty in bids[:levels]
     ]
@@ -103,7 +118,7 @@ def compute_depth_imbalance(
     ]
     bid_sum = sum(qty for _, qty in top_bids)
     ask_sum = sum(qty for _, qty in top_asks)
-    return _imbalance_ratio(bid_sum, ask_sum)
+    return bid_sum, ask_sum
 
 
 def get_market_snapshot(
@@ -118,14 +133,35 @@ def get_market_snapshot(
     ask_qty = _to_float(bt.get("askQty"))
     mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0
     imbalance = _imbalance_ratio(bid_qty, ask_qty)
+    depth_update_id: Optional[int] = None
 
     if settings.use_depth:
         depth = get_depth(client, symbol=symbol, limit=settings.depth_levels)
-        imbalance = compute_depth_imbalance(
-            bids=depth.get("bids", []),
-            asks=depth.get("asks", []),
+        depth_update_id = _to_int(depth.get("lastUpdateId"))
+        depth_bids = depth.get("bids", [])
+        depth_asks = depth.get("asks", [])
+        bid_qty, ask_qty = compute_depth_qty_sums(
+            bids=depth_bids,
+            asks=depth_asks,
             levels=settings.depth_levels,
         )
+        imbalance = _imbalance_ratio(bid_qty, ask_qty)
+        if settings.debug_depth_sums:
+            first_level_bid_qty = (
+                _to_float(depth_bids[0][1]) if depth_bids and len(depth_bids[0]) > 1 else 0.0
+            )
+            first_level_ask_qty = (
+                _to_float(depth_asks[0][1]) if depth_asks and len(depth_asks[0]) > 1 else 0.0
+            )
+            print(
+                "DEPTH_DEBUG:"
+                f" levels={settings.depth_levels}"
+                f" sum_bid_qty={bid_qty:.8f}"
+                f" sum_ask_qty={ask_qty:.8f}"
+                f" imbalance={imbalance:.8f}"
+                f" first_level_bid_qty={first_level_bid_qty:.8f}"
+                f" first_level_ask_qty={first_level_ask_qty:.8f}"
+            )
 
     return MarketSnapshot(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -135,4 +171,5 @@ def get_market_snapshot(
         bid_qty=bid_qty,
         ask_qty=ask_qty,
         imbalance=imbalance,
+        depth_update_id=depth_update_id,
     )

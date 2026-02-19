@@ -19,6 +19,14 @@ This repo runs a live (REST polling) Binance Spot Testnet bot with causal execut
 
 Optional:
 - Set `USE_DEPTH=true` to compute imbalance from `/v3/depth` top levels.
+- In depth mode, `bid_qty`/`ask_qty` in CSV are top-`DEPTH_LEVELS` summed quantities used for imbalance.
+- Stale snapshot guard can skip repeated unchanged books (`STALE_SNAPSHOT_SKIP=true`).
+- Enable dynamic position sizing with `ENABLE_POSITION_SIZING=true`.
+
+Position sizing (optional):
+- `linear_abs`: `notional = MAX_NOTIONAL_PER_TRADE_USDT * clip(abs(imbalance), 0, 1)`
+- `linear_excess`: `x = (abs(imbalance) - threshold) / (1 - threshold)`, `notional = MAX_NOTIONAL_PER_TRADE_USDT * clip(x, 0, 1)`
+- If `threshold >= 1`, `linear_excess` safely returns `0` notional.
 
 Optional threshold calibration (predictive, not PnL-based):
 - Optimizes threshold on recent labeled observations using t-stat of signed forward returns.
@@ -91,9 +99,15 @@ python -m src.run_live
 - `POLL_INTERVAL_SECONDS` (default `2.0`)
 - `USE_DEPTH` (default `false`)
 - `DEPTH_LEVELS` (default `10`)
+- `DEBUG_DEPTH_SUMS` (default `false`, prints depth aggregation diagnostics)
+- `STALE_SNAPSHOT_MAX_REPEATS` (default `2`)
+- `STALE_SNAPSHOT_SKIP` (default `true`)
 - `COOLDOWN_SECONDS` (default `15`)
 - `MAX_NOTIONAL_PER_TRADE_USDT` (default `10`)
+- `MIN_NOTIONAL_PER_TRADE_USDT` (default `0`)
 - `MAX_ABS_POSITION_BTC` (default `0.001`)
+- `ENABLE_POSITION_SIZING` (default `false`)
+- `POSITION_SIZING_MODE` (`linear_excess` or `linear_abs`, default `linear_excess`)
 - `MAX_CONSECUTIVE_ERRORS` (default `5`)
 - `RESYNC_EVERY_N_POLLS` (default `30`)
 - `PRINT_EVERY_N_POLLS` (default `1`)
@@ -152,6 +166,32 @@ Edge diagnostics:
 ```powershell
 python -m scripts.diagnose_edge outputs/trades.csv
 ```
+
+## Visualisation
+
+Plot paper equity retrospectively from an existing CSV:
+
+```powershell
+python -m scripts.plot_paper_equity --csv outputs/trades.csv
+```
+
+Save both equity and drawdown PNGs:
+
+```powershell
+python -m scripts.plot_paper_equity --csv outputs/trades.csv --out outputs/equity_curve.png --drawdown-out outputs/equity_drawdown.png
+```
+
+Market snapshot sanity check:
+
+```powershell
+python -m scripts.check_market_snapshot --csv outputs/trades.csv
+```
+
+## Audit Notes
+
+- Depth imbalance formula is `imbalance=(bid_qty-ask_qty)/(bid_qty+ask_qty)` with zero-denominator guard.
+- In `USE_DEPTH=true`, imbalance can still be extreme on testnet when top-level depth is one-sided or thin.
+- `DRY_RUN=true` never calls real `/v3/order`; `acct_btc/acct_usdt` are real account balances from `/v3/account`, while `paper_btc/paper_usdt` are the in-memory paper balances that change with simulated trades.
 
 Smoke run with calibration enabled:
 

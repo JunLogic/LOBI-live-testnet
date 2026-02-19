@@ -13,7 +13,7 @@ from src.execution import cancel_all_open_orders, execute_trade_decision, get_ac
 from src.logger import TradeCsvLogger
 from src.market_data import get_exchange_filters, get_market_snapshot
 from src.paper import apply_dry_run_trade, create_paper_ledger
-from src.risk import evaluate_pending_signal, risk_config_from_settings
+from src.risk import TradeDecision, evaluate_pending_signal, risk_config_from_settings
 from src.settings import RuntimeSettings, load_runtime_settings
 from src.strategy import BUY, HOLD, SELL, signal_from_imbalance
 
@@ -37,6 +37,12 @@ def _base_row(ts: str, pending_signal_prev: str) -> dict:
         "bid_qty": "",
         "ask_qty": "",
         "imbalance": "",
+        "sizing_enabled": "",
+        "sizing_mode": "",
+        "notional_target_usdt": "",
+        "notional_min_usdt": "",
+        "stale_repeats": "",
+        "depth_update_id": "",
         "threshold_used": "",
         "calib_state": "",
         "theta_hat": "",
@@ -74,8 +80,14 @@ def _print_settings(settings: RuntimeSettings) -> None:
         f" poll_interval={settings.poll_interval_seconds}"
         f" cooldown={settings.cooldown_seconds}"
         f" max_notional={settings.max_notional_per_trade_usdt}"
+        f" min_notional_per_trade={settings.min_notional_per_trade_usdt}"
         f" max_abs_position={settings.max_abs_position_btc}"
+        f" enable_position_sizing={settings.enable_position_sizing}"
+        f" position_sizing_mode={settings.position_sizing_mode}"
         f" use_depth={settings.use_depth}"
+        f" debug_depth_sums={settings.debug_depth_sums}"
+        f" stale_snapshot_skip={settings.stale_snapshot_skip}"
+        f" stale_snapshot_max_repeats={settings.stale_snapshot_max_repeats}"
         f" max_errors={settings.max_consecutive_errors}"
         f" resync_every={settings.resync_every_n_polls}"
         f" max_polls={settings.max_polls}"
@@ -100,6 +112,8 @@ def _print_heartbeat(
     reason: str,
     position_btc: float,
     position_usdt: float,
+    paper_btc: float,
+    paper_usdt: float,
 ) -> None:
     if (poll_number % settings.print_every_n_polls) != 0:
         return
@@ -113,8 +127,10 @@ def _print_heartbeat(
         f" decision={decision_side}"
         f" approved={approved}"
         f" reason={reason_text}"
-        f" pos_btc={position_btc:.8f}"
-        f" pos_usdt={position_usdt:.2f}"
+        f" acct_btc={position_btc:.8f}"
+        f" acct_usdt={position_usdt:.2f}"
+        f" paper_btc={paper_btc:.8f}"
+        f" paper_usdt={paper_usdt:.2f}"
     )
 
 
@@ -130,7 +146,7 @@ def _print_trade_event(
     slippage_bps: float = 0.0,
 ) -> None:
     mode = "DRY_RUN(simulated)" if simulated else "LIVE"
-    note = " (simulated; no balances should change)" if simulated else ""
+    note = " (simulated; real account balances should not change)" if simulated else ""
     cost_text = (
         f" fee_usdt={fee_usdt:.8f} slippage_bps={slippage_bps:.4f}"
         if simulated
@@ -156,6 +172,32 @@ def _confirmed_signal(raw_signal: str, signal_history: deque[str], settings: Run
     if confirmation_hits >= settings.confirmation_k:
         return raw_signal
     return HOLD
+
+
+def _snapshot_signature(bid: float, ask: float, bid_qty: float, ask_qty: float) -> tuple[float, float, float, float]:
+    return (
+        round(float(bid), 8),
+        round(float(ask), 8),
+        round(float(bid_qty), 8),
+        round(float(ask_qty), 8),
+    )
+
+
+def _guard_zero_quantity_decision(decision: TradeDecision) -> TradeDecision:
+    if (
+        decision.approved
+        and decision.side in (BUY, SELL)
+        and decision.quantity <= 0.0
+    ):
+        return TradeDecision(
+            side=decision.side,
+            approved=False,
+            reject_reason="qty_is_zero",
+            quote_order_qty=decision.quote_order_qty,
+            quantity=decision.quantity,
+            notional_target_usdt=decision.notional_target_usdt,
+        )
+    return decision
 
 
 def main() -> None:
@@ -203,6 +245,14 @@ def main() -> None:
     pnl_proxy_end = 0.0
     min_pnl_proxy = float("inf")
     max_pnl_proxy = float("-inf")
+    previous_snapshot_signature: Optional[tuple[float, float, float, float]] = None
+    previous_depth_update_id: Optional[int] = None
+    stale_repeats = 0
+    stale_repeat_threshold = (
+        1
+        if settings.stale_snapshot_max_repeats == 0
+        else settings.stale_snapshot_max_repeats
+    )
 
     try:
         while True:
@@ -217,6 +267,7 @@ def main() -> None:
             status_for_backoff: Optional[int] = None
             paper_trade_notional_usdt = 0.0
             paper_fee_usdt = 0.0
+            dry_run_trade_executed = False
 
             try:
                 snapshot = get_market_snapshot(
@@ -268,9 +319,55 @@ def main() -> None:
                     "bid_qty": snapshot.bid_qty,
                     "ask_qty": snapshot.ask_qty,
                     "imbalance": snapshot.imbalance,
+                    "sizing_enabled": settings.enable_position_sizing,
+                    "sizing_mode": settings.position_sizing_mode,
+                    "notional_target_usdt": 0.0,
+                    "notional_min_usdt": settings.min_notional_per_trade_usdt,
+                    "depth_update_id": (
+                        snapshot.depth_update_id
+                        if snapshot.depth_update_id is not None
+                        else ""
+                    ),
                     "pending_signal_prev": pending_prev,
                 }
             )
+
+            signature = _snapshot_signature(
+                bid=snapshot.bid,
+                ask=snapshot.ask,
+                bid_qty=snapshot.bid_qty,
+                ask_qty=snapshot.ask_qty,
+            )
+            if settings.use_depth and (snapshot.depth_update_id is not None):
+                if previous_depth_update_id == snapshot.depth_update_id:
+                    stale_repeats += 1
+                else:
+                    stale_repeats = 0
+            else:
+                if previous_snapshot_signature == signature:
+                    stale_repeats += 1
+                else:
+                    stale_repeats = 0
+            row["stale_repeats"] = stale_repeats
+
+            if settings.stale_snapshot_skip and stale_repeats >= stale_repeat_threshold:
+                stale_msg = f"stale snapshot repeats={stale_repeats}"
+                row.update(
+                    {
+                        "action_taken": "SKIP_POLL",
+                        "approved": False,
+                        "reject_reason": "stale_snapshot",
+                        "error": stale_msg,
+                    }
+                )
+                trade_logger.append(row)
+                if (polls % settings.print_every_n_polls) == 0:
+                    print(f"[POLL {polls}] WARNING reason={stale_msg}")
+                time.sleep(settings.poll_interval_seconds)
+                continue
+
+            previous_snapshot_signature = signature
+            previous_depth_update_id = snapshot.depth_update_id
 
             if snapshot.bid <= 0 or snapshot.ask <= 0 or snapshot.bid >= snapshot.ask:
                 warning_msg = (
@@ -323,6 +420,8 @@ def main() -> None:
             decision = evaluate_pending_signal(
                 pending_signal=pending_prev,
                 mid=snapshot.mid,
+                imbalance=snapshot.imbalance,
+                threshold_used=threshold_used,
                 position_btc=position_btc,
                 position_usdt=position_usdt,
                 filters=filters,
@@ -330,6 +429,8 @@ def main() -> None:
                 last_trade_ts=last_trade_ts,
                 cfg=risk_cfg,
             )
+            decision = _guard_zero_quantity_decision(decision)
+            row["notional_target_usdt"] = decision.notional_target_usdt
 
             try:
                 result = execute_trade_decision(
@@ -392,6 +493,9 @@ def main() -> None:
                         trade_quote_usdt = paper_trade.trade_notional_usdt
                         trade_avg_fill = paper_trade.exec_px if paper_trade.exec_px > 0 else snapshot.mid
                         trade_status = "DRY_RUN_FILLED" if paper_trade.traded else "DRY_RUN_NO_FILL"
+                        dry_run_trade_executed = (
+                            paper_trade.traded and (paper_trade.executed_qty_btc > 0.0)
+                        )
                     else:
                         trade_qty_btc = result.executed_qty
                         trade_quote_usdt = (
@@ -402,19 +506,41 @@ def main() -> None:
                         trade_avg_fill = result.avg_fill_px
                         trade_status = result.status
 
-                    _print_trade_event(
-                        simulated=result.action_taken.startswith("DRY_RUN_"),
-                        side=decision.side,
-                        qty_btc=trade_qty_btc,
-                        quote_usdt=trade_quote_usdt,
-                        avg_fill_px=trade_avg_fill,
-                        status=trade_status,
-                        order_id=result.order_id,
-                        fee_usdt=paper_trade.fee_usdt,
-                        slippage_bps=paper_ledger.slippage_bps,
-                    )
+                    if trade_qty_btc > 0.0:
+                        _print_trade_event(
+                            simulated=result.action_taken.startswith("DRY_RUN_"),
+                            side=decision.side,
+                            qty_btc=trade_qty_btc,
+                            quote_usdt=trade_quote_usdt,
+                            avg_fill_px=trade_avg_fill,
+                            status=trade_status,
+                            order_id=result.order_id,
+                            fee_usdt=paper_trade.fee_usdt,
+                            slippage_bps=paper_ledger.slippage_bps,
+                        )
+                    else:
+                        row.update(
+                            {
+                                "action_taken": f"SKIP_{decision.side}",
+                                "approved": False,
+                                "reject_reason": "qty_is_zero",
+                            }
+                        )
+                        if result.action_taken.startswith("DRY_RUN_"):
+                            row["status"] = "DRY_RUN_NO_FILL"
+                        if (polls % settings.print_every_n_polls) == 0:
+                            print(
+                                f"[POLL {polls}] SKIP_TRADE"
+                                f" side={decision.side}"
+                                f" reason=qty_is_zero"
+                                f" status={trade_status or '-'}"
+                            )
                 if decision.approved and (
-                    result.placed or result.action_taken.startswith("DRY_RUN_")
+                    (result.placed and result.executed_qty > 0.0)
+                    or (
+                        result.action_taken.startswith("DRY_RUN_")
+                        and dry_run_trade_executed
+                    )
                 ):
                     last_trade_ts = now.timestamp()
                 if result.error:
@@ -471,6 +597,8 @@ def main() -> None:
                 reason=decision.reject_reason,
                 position_btc=position_btc,
                 position_usdt=position_usdt,
+                paper_btc=paper_ledger.paper_btc,
+                paper_usdt=paper_ledger.paper_usdt,
             )
 
             if not poll_had_error:
