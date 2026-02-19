@@ -8,9 +8,12 @@ from typing import Any, Dict
 
 CSV_FIELDS = [
     "timestamp",
+    "best_bid",
+    "best_ask",
     "bid",
     "ask",
     "mid",
+    "spread",
     "bid_qty",
     "ask_qty",
     "imbalance",

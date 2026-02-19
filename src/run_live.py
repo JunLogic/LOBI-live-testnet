@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,9 +27,12 @@ def _extract_http_status(message: str) -> Optional[int]:
 def _base_row(ts: str, pending_signal_prev: str) -> dict:
     return {
         "timestamp": ts,
+        "best_bid": "",
+        "best_ask": "",
         "bid": "",
         "ask": "",
         "mid": "",
+        "spread": "",
         "bid_qty": "",
         "ask_qty": "",
         "imbalance": "",
@@ -69,6 +73,8 @@ def _print_settings(settings: RuntimeSettings) -> None:
         f" max_errors={settings.max_consecutive_errors}"
         f" resync_every={settings.resync_every_n_polls}"
         f" max_polls={settings.max_polls}"
+        f" confirmation_m={settings.confirmation_m}"
+        f" confirmation_k={settings.confirmation_k}"
     )
 
 
@@ -110,18 +116,36 @@ def _print_trade_event(
     avg_fill_px: float,
     status: str,
     order_id: str,
+    fee_usdt: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> None:
     mode = "DRY_RUN(simulated)" if simulated else "LIVE"
     note = " (simulated; no balances should change)" if simulated else ""
+    cost_text = (
+        f" fee_usdt={fee_usdt:.8f} slippage_bps={slippage_bps:.4f}"
+        if simulated
+        else ""
+    )
     print(
         f"TRADE: {mode} {side}"
         f" qty={qty_btc:.8f}"
         f" quote={quote_usdt:.8f}"
         f" avg_fill_px={avg_fill_px:.8f}"
+        f"{cost_text}"
         f" status={status or '-'}"
         f" orderId={order_id or '-'}"
         f"{note}"
     )
+
+
+def _confirmed_signal(raw_signal: str, signal_history: deque[str], settings: RuntimeSettings) -> str:
+    signal_history.append(raw_signal)
+    if raw_signal not in (BUY, SELL):
+        return HOLD
+    confirmation_hits = sum(1 for signal in signal_history if signal == raw_signal)
+    if confirmation_hits >= settings.confirmation_k:
+        return raw_signal
+    return HOLD
 
 
 def main() -> None:
@@ -158,6 +182,7 @@ def main() -> None:
     error_count = 0
     consecutive_errors = 0
     pending_signal = HOLD
+    signal_history: deque[str] = deque(maxlen=settings.confirmation_m)
     last_trade_ts: Optional[float] = None
     backoff_seconds = settings.backoff_base_seconds
     pnl_proxy_end = 0.0
@@ -215,16 +240,49 @@ def main() -> None:
                     time.sleep(settings.poll_interval_seconds)
                 continue
 
-            signal_t = signal_from_imbalance(snapshot.imbalance, settings.threshold)
+            spread = snapshot.ask - snapshot.bid
             row.update(
                 {
                     "timestamp": snapshot.timestamp,
+                    "best_bid": snapshot.bid,
+                    "best_ask": snapshot.ask,
                     "bid": snapshot.bid,
                     "ask": snapshot.ask,
                     "mid": snapshot.mid,
+                    "spread": spread,
                     "bid_qty": snapshot.bid_qty,
                     "ask_qty": snapshot.ask_qty,
                     "imbalance": snapshot.imbalance,
+                    "pending_signal_prev": pending_prev,
+                }
+            )
+
+            if snapshot.bid <= 0 or snapshot.ask <= 0 or snapshot.bid >= snapshot.ask:
+                warning_msg = (
+                    f"invalid_top_of_book bid={snapshot.bid:.8f} ask={snapshot.ask:.8f}"
+                )
+                row.update(
+                    {
+                        "action_taken": "SKIP_POLL",
+                        "approved": False,
+                        "reject_reason": "invalid_top_of_book",
+                        "error": warning_msg,
+                    }
+                )
+                trade_logger.append(row)
+                if (polls % settings.print_every_n_polls) == 0:
+                    print(f"[POLL {polls}] WARNING reason={warning_msg}")
+                time.sleep(settings.poll_interval_seconds)
+                continue
+
+            raw_signal_t = signal_from_imbalance(snapshot.imbalance, settings.threshold)
+            signal_t = _confirmed_signal(
+                raw_signal=raw_signal_t,
+                signal_history=signal_history,
+                settings=settings,
+            )
+            row.update(
+                {
                     "signal_t": signal_t,
                     "pending_signal_prev": pending_prev,
                 }
@@ -291,7 +349,8 @@ def main() -> None:
                         side=decision.side,
                         quote_order_qty=decision.quote_order_qty,
                         quantity=decision.quantity,
-                        mid=snapshot.mid,
+                        best_bid=snapshot.bid,
+                        best_ask=snapshot.ask,
                     )
                     paper_trade_notional_usdt = paper_trade.trade_notional_usdt
                     paper_fee_usdt = paper_trade.fee_usdt
@@ -319,6 +378,8 @@ def main() -> None:
                         avg_fill_px=trade_avg_fill,
                         status=trade_status,
                         order_id=result.order_id,
+                        fee_usdt=paper_trade.fee_usdt,
+                        slippage_bps=paper_ledger.slippage_bps,
                     )
                 if decision.approved and (
                     result.placed or result.action_taken.startswith("DRY_RUN_")

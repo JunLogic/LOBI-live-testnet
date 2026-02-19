@@ -43,9 +43,16 @@ class RuntimeSettings:
     paper_start_btc: float
     paper_fee_rate: float
     paper_slippage_bps: float
+    confirmation_m: int
+    confirmation_k: int
 
 
 def load_runtime_settings() -> RuntimeSettings:
+    confirmation_m = max(1, _parse_int(os.getenv("CONFIRMATION_M", "1"), 1))
+    confirmation_k = max(1, _parse_int(os.getenv("CONFIRMATION_K", "1"), 1))
+    if confirmation_k > confirmation_m:
+        confirmation_k = confirmation_m
+
     return RuntimeSettings(
         dry_run=_parse_bool(os.getenv("DRY_RUN", "true")),
         symbol=os.getenv("SYMBOL", "BTCUSDT"),
@@ -84,4 +91,6 @@ def load_runtime_settings() -> RuntimeSettings:
         paper_slippage_bps=max(
             0.0, _parse_float(os.getenv("PAPER_SLIPPAGE_BPS", "0.0"), 0.0)
         ),
+        confirmation_m=confirmation_m,
+        confirmation_k=confirmation_k,
     )

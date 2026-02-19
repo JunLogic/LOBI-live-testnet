@@ -31,7 +31,7 @@ Optional:
 - 429/418 backoff.
 - Best-effort cancel of open orders on shutdown.
 
-## Setup
+## How To Run
 
 1. Activate the existing venv:
 
@@ -45,24 +45,38 @@ Optional:
 pip install -r requirements.txt
 ```
 
-3. Ensure `.env` contains:
+3. Run a bounded dry-run session:
+
+```powershell
+$env:DRY_RUN="true"
+$env:MAX_POLLS="50"
+$env:POLL_INTERVAL_SECONDS="0.2"
+python -m src.run_live
+```
+
+Per poll, the bot appends a row to `outputs/trades.csv` including market stream fields:
+`timestamp`, `best_bid`, `best_ask`, `mid`, `spread`, `imbalance` (plus execution/risk/paper fields).
+
+Ensure `.env` contains:
 
 - `BINANCE_TESTNET_API_KEY`
 - `BINANCE_TESTNET_API_SECRET`
 - `BINANCE_TESTNET_BASE_URL=https://testnet.binance.vision/api`
 
-## Run
-
-```powershell
-python -m src.run_live
-```
-
-The bot appends one row per poll to `outputs/trades.csv`.
-
-In `DRY_RUN=true`, it also maintains an in-memory paper portfolio and writes:
+In `DRY_RUN=true`, the bot maintains an in-memory paper portfolio and writes:
 - `paper_btc`, `paper_usdt`
 - `paper_equity_usdt`, `paper_pnl_usdt`
 - `paper_trade_notional_usdt`, `paper_fee_usdt`
+
+## Safety
+
+- Default behavior is safe: `DRY_RUN=true` means no real `/v3/order` placement.
+- Live testnet order placement is only enabled when you explicitly set:
+
+```powershell
+$env:DRY_RUN="false"
+python -m src.run_live
+```
 
 ## Environment Variables
 
@@ -85,17 +99,48 @@ In `DRY_RUN=true`, it also maintains an in-memory paper portfolio and writes:
 - `PAPER_START_BTC` (default `0`)
 - `PAPER_FEE_RATE` (default `0.0`)
 - `PAPER_SLIPPAGE_BPS` (default `0.0`)
+- `CONFIRMATION_M` (default `1`)
+- `CONFIRMATION_K` (default `1`, clamped to `<= CONFIRMATION_M`)
 
 For live testnet execution, set `DRY_RUN=false`.
 
-## Paper PnL Summary
+## Evaluation
+
+Cost assumptions in paper trading:
+- `PAPER_FEE_RATE` applies per simulated trade notional.
+- `PAPER_SLIPPAGE_BPS` worsens fills after spread crossing (`BUY` from best ask, `SELL` from best bid).
+
+Churn filter:
+- Raw signals are confirmed by persistence before entering the 1-step delayed execution stream.
+- `CONFIRMATION_M`: lookback window size.
+- `CONFIRMATION_K`: minimum count of the same raw `BUY`/`SELL` in that window to emit tradeable signal.
+
+Paper PnL summary:
 
 ```powershell
-python -m scripts.summarize_paper_pnl
+python -m scripts.summarize_paper_pnl --csv outputs/trades.csv
 ```
 
 Optional plot (only if matplotlib is installed):
 
 ```powershell
 python -m scripts.summarize_paper_pnl --plot
+```
+
+Edge diagnostics:
+
+```powershell
+python -m scripts.diagnose_edge outputs/trades.csv
+```
+
+Example output field formats:
+
+```text
+total_paper_trades=<int>
+final_paper_equity=<float>
+paper_pnl=<float>
+max_drawdown=<float>
+rows=<int>
+IC=<float>
+decile,count,mean_r1,hit_rate
 ```

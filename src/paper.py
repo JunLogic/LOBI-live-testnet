@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from src.settings import RuntimeSettings
@@ -30,6 +31,9 @@ class PaperLedger:
     max_drawdown_usdt: float = 0.0
 
     def mark_to_market(self, mid: float) -> tuple[float, float]:
+        _ensure_finite("mid", mid)
+        _ensure_finite("paper_usdt", self.paper_usdt)
+        _ensure_finite("paper_btc", self.paper_btc)
         equity = self.paper_usdt + self.paper_btc * mid
         if equity > self.equity_peak_usdt:
             self.equity_peak_usdt = equity
@@ -37,6 +41,8 @@ class PaperLedger:
         if drawdown > self.max_drawdown_usdt:
             self.max_drawdown_usdt = drawdown
         pnl = equity - self.initial_equity_usdt
+        _ensure_finite("paper_equity_usdt", equity)
+        _ensure_finite("paper_pnl_usdt", pnl)
         return equity, pnl
 
 
@@ -52,13 +58,23 @@ def create_paper_ledger(settings: RuntimeSettings, initial_mid: float) -> PaperL
     )
 
 
-def _exec_px(mid: float, side: str, slippage_bps: float) -> float:
+def _ensure_finite(name: str, value: float) -> None:
+    if not math.isfinite(value):
+        raise ValueError(f"non_finite_{name}={value}")
+
+
+def _ensure_finite_ledger(ledger: PaperLedger) -> None:
+    _ensure_finite("paper_usdt", ledger.paper_usdt)
+    _ensure_finite("paper_btc", ledger.paper_btc)
+
+
+def _exec_px(best_bid: float, best_ask: float, side: str, slippage_bps: float) -> float:
     slip = max(slippage_bps, 0.0) / 10000.0
     if side == BUY:
-        return mid * (1.0 + slip)
+        return best_ask * (1.0 + slip)
     if side == SELL:
-        return mid * (1.0 - slip)
-    return mid
+        return best_bid * (1.0 - slip)
+    return 0.0
 
 
 def apply_dry_run_trade(
@@ -68,19 +84,27 @@ def apply_dry_run_trade(
     side: str,
     quote_order_qty: float,
     quantity: float,
-    mid: float,
+    best_bid: float,
+    best_ask: float,
 ) -> PaperTradeResult:
     if not approved or (not action_taken.startswith("DRY_RUN_")):
         return PaperTradeResult()
     if side not in (BUY, SELL):
         return PaperTradeResult()
-    if mid <= 0:
-        return PaperTradeResult(side=side, exec_px=mid)
+    if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+        return PaperTradeResult(side=side)
 
-    exec_px = _exec_px(mid=mid, side=side, slippage_bps=ledger.slippage_bps)
+    mid = (best_bid + best_ask) / 2.0
+    exec_px = _exec_px(
+        best_bid=best_bid,
+        best_ask=best_ask,
+        side=side,
+        slippage_bps=ledger.slippage_bps,
+    )
     if exec_px <= 0:
         return PaperTradeResult(side=side, exec_px=exec_px)
 
+    _ensure_finite_ledger(ledger)
     before_equity = ledger.paper_usdt + ledger.paper_btc * mid
 
     if side == BUY:
@@ -93,6 +117,7 @@ def apply_dry_run_trade(
 
         ledger.paper_usdt -= spend_usdt
         ledger.paper_btc += bought_btc
+        _ensure_finite_ledger(ledger)
 
         after_equity = ledger.paper_usdt + ledger.paper_btc * mid
         trade_pnl = after_equity - before_equity
@@ -120,6 +145,7 @@ def apply_dry_run_trade(
 
     ledger.paper_btc -= sell_qty
     ledger.paper_usdt += net_usdt
+    _ensure_finite_ledger(ledger)
 
     after_equity = ledger.paper_usdt + ledger.paper_btc * mid
     trade_pnl = after_equity - before_equity
