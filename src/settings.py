@@ -45,6 +45,17 @@ class RuntimeSettings:
     paper_slippage_bps: float
     confirmation_m: int
     confirmation_k: int
+    enable_threshold_calibration: bool
+    calibration_mode: str
+    calibration_w_polls: int
+    calibration_h_polls: int
+    thresh_grid_min: float
+    thresh_grid_max: float
+    thresh_grid_step: float
+    calibration_min_trades: int
+    calibration_turnover_penalty_alpha: float
+    calibration_ema_lambda: float
+    calibration_horizon_polls: int
 
 
 def load_runtime_settings() -> RuntimeSettings:
@@ -52,6 +63,19 @@ def load_runtime_settings() -> RuntimeSettings:
     confirmation_k = max(1, _parse_int(os.getenv("CONFIRMATION_K", "1"), 1))
     if confirmation_k > confirmation_m:
         confirmation_k = confirmation_m
+
+    calibration_mode = os.getenv("CALIBRATION_MODE", "warmup_then_trade").strip().lower()
+    if calibration_mode not in {"warmup_then_trade", "rolling_walk_forward"}:
+        calibration_mode = "warmup_then_trade"
+
+    thresh_grid_min = max(0.0, _parse_float(os.getenv("THRESH_GRID_MIN", "0.01"), 0.01))
+    thresh_grid_max = max(
+        thresh_grid_min,
+        _parse_float(os.getenv("THRESH_GRID_MAX", "0.20"), 0.20),
+    )
+    thresh_grid_step = max(
+        0.0001, _parse_float(os.getenv("THRESH_GRID_STEP", "0.01"), 0.01)
+    )
 
     return RuntimeSettings(
         dry_run=_parse_bool(os.getenv("DRY_RUN", "true")),
@@ -93,4 +117,31 @@ def load_runtime_settings() -> RuntimeSettings:
         ),
         confirmation_m=confirmation_m,
         confirmation_k=confirmation_k,
+        enable_threshold_calibration=_parse_bool(
+            os.getenv("ENABLE_THRESHOLD_CALIBRATION", "false")
+        ),
+        calibration_mode=calibration_mode,
+        calibration_w_polls=max(
+            1, _parse_int(os.getenv("CALIBRATION_W_POLLS", "300"), 300)
+        ),
+        calibration_h_polls=max(
+            1, _parse_int(os.getenv("CALIBRATION_H_POLLS", "500"), 500)
+        ),
+        thresh_grid_min=thresh_grid_min,
+        thresh_grid_max=thresh_grid_max,
+        thresh_grid_step=thresh_grid_step,
+        calibration_min_trades=max(
+            1, _parse_int(os.getenv("CALIBRATION_MIN_TRADES", "20"), 20)
+        ),
+        calibration_turnover_penalty_alpha=max(
+            0.0,
+            _parse_float(os.getenv("CALIBRATION_TURNOVER_PENALTY_ALPHA", "0.0"), 0.0),
+        ),
+        calibration_ema_lambda=min(
+            1.0,
+            max(0.0, _parse_float(os.getenv("CALIBRATION_EMA_LAMBDA", "0.0"), 0.0)),
+        ),
+        calibration_horizon_polls=max(
+            1, _parse_int(os.getenv("CALIBRATION_HORIZON_POLLS", "1"), 1)
+        ),
     )

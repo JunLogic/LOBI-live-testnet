@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from src.binance_client import BinanceClient
+from src.calibration import WalkForwardCalibrator
 from src.config import API_KEY, API_SECRET, BASE_URL
 from src.execution import cancel_all_open_orders, execute_trade_decision, get_account_balances
 from src.logger import TradeCsvLogger
@@ -36,6 +37,11 @@ def _base_row(ts: str, pending_signal_prev: str) -> dict:
         "bid_qty": "",
         "ask_qty": "",
         "imbalance": "",
+        "threshold_used": "",
+        "calib_state": "",
+        "theta_hat": "",
+        "calib_score": "",
+        "calib_n": "",
         "signal_t": "",
         "pending_signal_prev": pending_signal_prev,
         "action_taken": "",
@@ -75,6 +81,10 @@ def _print_settings(settings: RuntimeSettings) -> None:
         f" max_polls={settings.max_polls}"
         f" confirmation_m={settings.confirmation_m}"
         f" confirmation_k={settings.confirmation_k}"
+        f" threshold_calibration={settings.enable_threshold_calibration}"
+        f" calibration_mode={settings.calibration_mode}"
+        f" calibration_w={settings.calibration_w_polls}"
+        f" calibration_h={settings.calibration_h_polls}"
     )
 
 
@@ -154,6 +164,11 @@ def main() -> None:
 
     client = BinanceClient(base_url=BASE_URL, api_key=API_KEY, api_secret=API_SECRET)
     trade_logger = TradeCsvLogger(path="outputs/trades.csv")
+    calibrator = (
+        WalkForwardCalibrator(settings=settings)
+        if settings.enable_threshold_calibration
+        else None
+    )
 
     # Connectivity checks using the expected /v3 paths.
     client.get("/v3/ping")
@@ -275,7 +290,19 @@ def main() -> None:
                 time.sleep(settings.poll_interval_seconds)
                 continue
 
-            raw_signal_t = signal_from_imbalance(snapshot.imbalance, settings.threshold)
+            threshold_used = settings.threshold
+            calib_state = "DISABLED"
+            theta_hat = ""
+            calib_score = ""
+            calib_n = ""
+            if calibrator is not None:
+                calibrator.update(snapshot)
+                threshold_used = calibrator.current_threshold(settings.threshold)
+                calib_state = calibrator.state
+                theta_hat = calibrator.last_report.get("theta_hat", "")
+                calib_score = calibrator.last_report.get("score_adj", "")
+                calib_n = calibrator.last_report.get("n", "")
+            raw_signal_t = signal_from_imbalance(snapshot.imbalance, threshold_used)
             signal_t = _confirmed_signal(
                 raw_signal=raw_signal_t,
                 signal_history=signal_history,
@@ -283,6 +310,11 @@ def main() -> None:
             )
             row.update(
                 {
+                    "threshold_used": threshold_used,
+                    "calib_state": calib_state,
+                    "theta_hat": theta_hat,
+                    "calib_score": calib_score,
+                    "calib_n": calib_n,
                     "signal_t": signal_t,
                     "pending_signal_prev": pending_prev,
                 }

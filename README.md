@@ -20,6 +20,11 @@ This repo runs a live (REST polling) Binance Spot Testnet bot with causal execut
 Optional:
 - Set `USE_DEPTH=true` to compute imbalance from `/v3/depth` top levels.
 
+Optional threshold calibration (predictive, not PnL-based):
+- Optimizes threshold on recent labeled observations using t-stat of signed forward returns.
+- `WARMUP_THEN_TRADE`: warm up on `W`, calibrate once, then trade.
+- `ROLLING_WALK_FORWARD`: calibrate on last `W`, trade next `H`, then recalibrate.
+
 ## Safety Defaults
 
 - `DRY_RUN=true` by default (no real order placement).
@@ -101,6 +106,17 @@ python -m src.run_live
 - `PAPER_SLIPPAGE_BPS` (default `0.0`)
 - `CONFIRMATION_M` (default `1`)
 - `CONFIRMATION_K` (default `1`, clamped to `<= CONFIRMATION_M`)
+- `ENABLE_THRESHOLD_CALIBRATION` (default `false`)
+- `CALIBRATION_MODE` (`warmup_then_trade` or `rolling_walk_forward`)
+- `CALIBRATION_W_POLLS` (default `300`)
+- `CALIBRATION_H_POLLS` (default `500`, rolling mode only)
+- `THRESH_GRID_MIN` (default `0.01`)
+- `THRESH_GRID_MAX` (default `0.20`)
+- `THRESH_GRID_STEP` (default `0.01`)
+- `CALIBRATION_MIN_TRADES` (default `20`)
+- `CALIBRATION_TURNOVER_PENALTY_ALPHA` (default `0.0`)
+- `CALIBRATION_EMA_LAMBDA` (default `0.0`)
+- `CALIBRATION_HORIZON_POLLS` (default `1`)
 
 For live testnet execution, set `DRY_RUN=false`.
 
@@ -114,6 +130,10 @@ Churn filter:
 - Raw signals are confirmed by persistence before entering the 1-step delayed execution stream.
 - `CONFIRMATION_M`: lookback window size.
 - `CONFIRMATION_K`: minimum count of the same raw `BUY`/`SELL` in that window to emit tradeable signal.
+
+Threshold calibration:
+- Calibrates threshold on predictive score: t-stat of `s_t(theta) * r_{t+1}`.
+- This does not alter live safety behavior; `DRY_RUN=true` remains default.
 
 Paper PnL summary:
 
@@ -131,6 +151,28 @@ Edge diagnostics:
 
 ```powershell
 python -m scripts.diagnose_edge outputs/trades.csv
+```
+
+Smoke run with calibration enabled:
+
+```powershell
+$env:DRY_RUN="true"
+$env:ENABLE_THRESHOLD_CALIBRATION="true"
+$env:CALIBRATION_MODE="warmup_then_trade"
+$env:CALIBRATION_W_POLLS="20"
+$env:MAX_POLLS="60"
+$env:POLL_INTERVAL_SECONDS="0.2"
+python -m src.run_live
+```
+
+Smoke run with calibration disabled (baseline behavior):
+
+```powershell
+$env:DRY_RUN="true"
+$env:ENABLE_THRESHOLD_CALIBRATION="false"
+$env:MAX_POLLS="60"
+$env:POLL_INTERVAL_SECONDS="0.2"
+python -m src.run_live
 ```
 
 Example output field formats:
